@@ -54,6 +54,7 @@ fun DevicesScreen() {
     val bonded by bt.bonded.collectAsStateWithLifecycle()
     val connected by bt.connected.collectAsStateWithLifecycle()
     val monitoring by MonitorService.running.collectAsStateWithLifecycle()
+    val problem by bt.problem.collectAsStateWithLifecycle()
 
     var busy by remember { mutableStateOf<String?>(null) }
     var diag by remember { mutableStateOf<String?>(null) }
@@ -116,6 +117,32 @@ fun DevicesScreen() {
 
         if (!enabled) {
             item { Text("Bluetooth выключен — список и состояние могут быть неполными.") }
+        }
+
+        problem?.let { p ->
+            item {
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                ) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Не вижу устройства: $p", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Откройте настройки приложения → Разрешения и разрешите «Устройства поблизости» " +
+                                "(на Xiaomi также может быть пункт «Bluetooth» в разделе «Другие разрешения»). " +
+                                "Затем вернитесь сюда и нажмите «Обновить».",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                openScreen(ctx, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:${ctx.packageName}")))
+                            }) { Text("Настройки приложения") }
+                            OutlinedButton(onClick = { bt.ensureProxies(); bt.refresh() }) { Text("Обновить") }
+                        }
+                    }
+                }
+            }
         }
 
         items(bonded, key = { it.address }) { d ->

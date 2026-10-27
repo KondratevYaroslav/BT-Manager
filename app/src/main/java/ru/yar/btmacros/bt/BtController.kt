@@ -1,5 +1,6 @@
 package ru.yar.btmacros.bt
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothA2dp
 import android.bluetooth.BluetoothAdapter
@@ -12,6 +13,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -66,6 +68,10 @@ class BtController(private val context: Context) {
     /** Устройство, на которое сейчас идёт музыка (null — неизвестно или нет). */
     private val _musicDevice = MutableStateFlow<String?>(null)
     val musicDevice: StateFlow<String?> = _musicDevice
+
+    /** Почему список устройств может быть пустым (null — всё в порядке). */
+    private val _problem = MutableStateFlow<String?>(null)
+    val problem: StateFlow<String?> = _problem
 
     /** Куда отправлять события-триггеры (выставляет App → MacroEngine). */
     var onEvent: ((TriggerType, String?) -> Unit)? = null
@@ -130,11 +136,28 @@ class BtController(private val context: Context) {
             addAction(ACTION_A2DP_ACTIVE_DEVICE_CHANGED)
         }
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
-        adapter?.let { ad ->
-            runCatching { ad.getProfileProxy(context, profileListener, BluetoothProfile.A2DP) }
-            runCatching { ad.getProfileProxy(context, profileListener, BluetoothProfile.HEADSET) }
-        }
+        ensureProxies()
         refresh()
+    }
+
+    /** На Android 12+ — выдано ли разрешение «Устройства поблизости». */
+    fun hasPermission(): Boolean =
+        Build.VERSION.SDK_INT < 31 ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
+            PackageManager.PERMISSION_GRANTED
+
+    /** Подключиться к профилям A2DP/HFP (повторно — после выдачи разрешения). */
+    fun ensureProxies() {
+        val ad = adapter ?: return
+        if (a2dp == null) runCatching { ad.getProfileProxy(context, profileListener, BluetoothProfile.A2DP) }
+        if (headset == null) runCatching { ad.getProfileProxy(context, profileListener, BluetoothProfile.HEADSET) }
+    }
+
+    private fun setProblem(p: String?) {
+        if (_problem.value != p) {
+            _problem.value = p
+            if (p != null) EventLog.add("Проблема: $p")
+        }
     }
 
     /** Вызывается из BtEventReceiver при ACL_CONNECTED / ACL_DISCONNECTED. */
@@ -154,11 +177,17 @@ class BtController(private val context: Context) {
         val on = ad?.isEnabled == true
         _enabled.value = on
 
+        var problem: String? = null
         val devices: List<BluetoothDevice> = try {
             ad?.bondedDevices?.toList().orEmpty()
         } catch (e: SecurityException) {
+            problem = "система не дала доступ к списку устройств (${e.message})"
             emptyList()
         }
+        if (ad == null) problem = "на телефоне не найден Bluetooth-адаптер"
+        else if (problem == null && !hasPermission()) problem = "не выдано разрешение «Устройства поблизости»"
+        else if (problem == null && on && devices.isEmpty()) problem = "система вернула пустой список сопряжённых устройств"
+        setProblem(problem)
         _bonded.value = devices
             .map { Device(it.address, safeName(it) ?: it.address, kindOf(it)) }
             .sortedBy { it.name.lowercase() }

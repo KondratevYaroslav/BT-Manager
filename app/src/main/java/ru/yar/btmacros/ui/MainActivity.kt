@@ -4,6 +4,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -42,6 +43,16 @@ import ru.yar.btmacros.model.newMacroTemplate
 import ru.yar.btmacros.service.MonitorService
 
 class MainActivity : ComponentActivity() {
+    private val permissionRequest =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            val bt = App.instance.bt
+            ru.yar.btmacros.data.EventLog.add(
+                "Разрешение «Устройства поблизости»: " + if (result.values.all { it }) "выдано" else "отклонено"
+            )
+            bt.ensureProxies()
+            bt.refresh()
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -49,10 +60,14 @@ class MainActivity : ComponentActivity() {
         app.bt.start()
         if (app.monitoringEnabled) MonitorService.start(this)
         setContent { BtTheme { MainScreen() } }
+        if (!app.bt.hasPermission()) {
+            permissionRequest.launch(arrayOf(android.Manifest.permission.BLUETOOTH_CONNECT))
+        }
     }
 
     override fun onResume() {
         super.onResume()
+        App.instance.bt.ensureProxies()
         App.instance.bt.refresh()
     }
 }
