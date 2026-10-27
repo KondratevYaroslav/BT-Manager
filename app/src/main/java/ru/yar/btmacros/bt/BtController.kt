@@ -301,7 +301,13 @@ class BtController(private val context: Context) {
         }
     }
 
+    fun appVersion(): String = runCatching {
+        @Suppress("DEPRECATION")
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+    }.getOrNull() ?: "?"
+
     fun diagnose(): String = buildString {
+        appendLine("Сборка приложения: ${appVersion()}")
         appendLine("Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
         val ad = adapter
         appendLine("Адаптер: " + when {
@@ -309,6 +315,18 @@ class BtController(private val context: Context) {
             ad.isEnabled -> "включён"
             else -> "выключен"
         })
+        appendLine("Разрешение «Устройства поблизости»: " +
+            if (Build.VERSION.SDK_INT < 31) "не требуется" else if (hasPermission()) "выдано" else "НЕ выдано")
+        val bondedRaw = try {
+            "${ad?.bondedDevices?.size ?: "нет адаптера"}"
+        } catch (e: Exception) {
+            "ошибка ${e.javaClass.simpleName}: ${e.message}"
+        }
+        appendLine("Сопряжённых устройств (ответ системы): $bondedRaw")
+        val viaProfiles = runCatching {
+            (a2dp?.connectedDevices.orEmpty() + headset?.connectedDevices.orEmpty()).size
+        }.fold({ "$it" }, { "ошибка ${it.javaClass.simpleName}" })
+        appendLine("Подключено по A2DP/HFP: $viaProfiles")
         appendLine("Профиль A2DP: " + if (a2dp != null) "доступен" else "нет")
         appendLine("Профиль HFP: " + if (headset != null) "доступен" else "нет")
         for ((label, proxy) in listOf("A2DP" to a2dp, "HFP" to headset)) {

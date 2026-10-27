@@ -119,7 +119,8 @@ fun DevicesScreen() {
             item { Text("Bluetooth выключен — список и состояние могут быть неполными.") }
         }
 
-        problem?.let { p ->
+        if (bonded.isEmpty() || problem != null) {
+            val p = problem ?: "система вернула пустой список"
             item {
                 Card(
                     Modifier.fillMaxWidth(),

@@ -35,7 +35,7 @@ class App : Application() {
         bt.onEvent = engine::onEvent
         bt.onAudioChanged = music::onAudioChanged
         bt.start()
-        EventLog.add("Приложение запущено")
+        EventLog.add("Приложение запущено, сборка ${bt.appVersion()}")
     }
 
     companion object {

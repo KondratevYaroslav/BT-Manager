@@ -16,8 +16,9 @@ android {
         // и запускать фоновый сервис без ограничений Android 12+.
         // Приложение ставится вручную (не через Play), поэтому это допустимо.
         targetSdk = 30
-        versionCode = 1
-        versionName = "1.0"
+        val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
+        versionCode = 1 + run
+        versionName = "1.0.$run"
     }
 
     buildTypes {
