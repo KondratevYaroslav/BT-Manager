@@ -70,6 +70,11 @@ class MusicPriority(context: Context, private val bt: BtController) {
         }
     }
 
+    /** То же, что apply, но без ожидания (для виджета). */
+    fun applyAsync(reason: String) {
+        scope.launch { apply(reason) }
+    }
+
     /** Выбрать самое приоритетное из подключённых и направить на него музыку. */
     suspend fun apply(reason: String): BtController.OpResult? = withContext(Dispatchers.IO) {
         bt.refresh()

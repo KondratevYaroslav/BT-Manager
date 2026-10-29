@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">BT Макросы</string>
+    <string name="widget_macro_name">Макрос</string>
+    <string name="widget_macro_desc">Кнопка запуска макроса со статусом</string>
+    <string name="widget_media_name">Управление аудио</string>
+    <string name="widget_media_desc">Назад, пауза, вперёд и приоритет музыки</string>
 </resources>

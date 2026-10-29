@@ -33,12 +33,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ru.yar.btmacros.App
 import ru.yar.btmacros.model.Macro
 import ru.yar.btmacros.model.describe
+import ru.yar.btmacros.model.describeConditions
+import androidx.compose.material.icons.filled.Add
 
 @Composable
 fun MacrosScreen(onEdit: (Macro) -> Unit) {
     val app = App.instance
     val macros by app.store.macros.collectAsStateWithLifecycle()
     val running by app.engine.running.collectAsStateWithLifecycle()
+    val status by app.engine.status.collectAsStateWithLifecycle()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     var toDelete by remember { mutableStateOf<Macro?>(null) }
 
     if (macros.isEmpty()) {
@@ -63,8 +67,19 @@ fun MacrosScreen(onEdit: (Macro) -> Unit) {
                 MacroCard(
                     m = m,
                     isRunning = m.id in running,
+                    statusText = status[m.id],
                     onToggle = { app.store.setEnabled(m.id, it) },
-                    onRun = { if (m.id in running) app.engine.stop(m.id) else app.engine.run(m, null, manual = true) },
+                    onRun = {
+                        if (m.id in running) app.engine.stop(m.id)
+                        else app.engine.run(m, null, ru.yar.btmacros.engine.Source.MANUAL)
+                    },
+                    onWidget = {
+                        if (!ru.yar.btmacros.widget.Widgets.requestPinMacro(ctx, m)) {
+                            android.widget.Toast.makeText(ctx,
+                                "Лаунчер не поддерживает — добавьте через меню виджетов рабочего стола",
+                                android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    },
                     onEdit = { onEdit(m) },
                     onDelete = { toDelete = m },
                 )
@@ -91,8 +106,10 @@ fun MacrosScreen(onEdit: (Macro) -> Unit) {
 private fun MacroCard(
     m: Macro,
     isRunning: Boolean,
+    statusText: String?,
     onToggle: (Boolean) -> Unit,
     onRun: () -> Unit,
+    onWidget: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -103,24 +120,29 @@ private fun MacroCard(
                 Switch(checked = m.enabled, onCheckedChange = onToggle)
             }
             Text("Когда: " + m.trigger.describe(), style = MaterialTheme.typography.bodyMedium)
-            if (m.conditionAddress != null) {
-                Text("Если подключено: " + (m.conditionName ?: m.conditionAddress),
-                    style = MaterialTheme.typography.bodyMedium)
+            val conds = m.describeConditions()
+            if (conds.isNotEmpty()) {
+                Text("Если: " + conds.joinToString(", "), style = MaterialTheme.typography.bodyMedium)
             }
             m.actions.forEachIndexed { i, a ->
                 Text("${i + 1}. ${a.describe()}", style = MaterialTheme.typography.bodySmall)
             }
             if (m.actions.isEmpty()) Text("Нет действий", style = MaterialTheme.typography.bodySmall)
+            if (statusText != null) {
+                Text(
+                    (if (isRunning) "▶ " else "Последний запуск: ") + statusText,
+                    color = if (isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (isRunning) {
-                    Text("выполняется…", color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.labelMedium)
-                }
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onRun) {
                         Icon(if (isRunning) Icons.Default.Close else Icons.Default.PlayArrow, null)
                         Text(if (isRunning) " Стоп" else " Запустить")
                     }
+                    TextButton(onClick = onWidget) { Icon(Icons.Default.Add, "Виджет на экран") }
                     TextButton(onClick = onEdit) { Icon(Icons.Default.Edit, "Изменить") }
                     TextButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Удалить") }
                 }

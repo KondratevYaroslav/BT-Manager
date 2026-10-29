@@ -26,6 +26,29 @@ object Notifications {
         nm.createNotificationChannel(
             NotificationChannel(CH_EVENTS, "Уведомления макросов", NotificationManager.IMPORTANCE_DEFAULT)
         )
+        nm.createNotificationChannel(
+            NotificationChannel(CH_ACTIONS, "Действия, требующие нажатия", NotificationManager.IMPORTANCE_HIGH)
+        )
+    }
+
+    private const val CH_ACTIONS = "actions"
+
+    /** Уведомление-кнопка: когда Android не разрешает открыть экран из фона. */
+    @SuppressLint("MissingPermission")
+    fun actionPrompt(ctx: Context, title: String, text: String, pi: PendingIntent) {
+        val n = NotificationCompat.Builder(ctx, CH_ACTIONS)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        try {
+            NotificationManagerCompat.from(ctx).notify(nextId.incrementAndGet(), n)
+        } catch (_: SecurityException) {
+        }
     }
 
     private fun openApp(ctx: Context): PendingIntent = PendingIntent.getActivity(

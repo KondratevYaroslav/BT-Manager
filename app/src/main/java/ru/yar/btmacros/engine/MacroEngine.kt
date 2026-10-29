@@ -23,9 +23,18 @@ import ru.yar.btmacros.data.MacroStore
 import ru.yar.btmacros.model.ActionType
 import ru.yar.btmacros.model.Macro
 import ru.yar.btmacros.model.MacroAction
+import ru.yar.btmacros.model.MediaKey
 import ru.yar.btmacros.model.TRIGGER_DEVICE
 import ru.yar.btmacros.model.TriggerType
+import ru.yar.btmacros.model.describe
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+
+/** Откуда запущен макрос. */
+enum class Source { EVENT, MANUAL, MACRO }
 
 /** Запускает макросы по событиям и выполняет их действия по порядку. */
 class MacroEngine(
@@ -33,35 +42,81 @@ class MacroEngine(
     private val bt: BtController,
     private val store: MacroStore,
     private val music: MusicPriority,
+    private val aa: AndroidAutoMonitor,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val jobs = ConcurrentHashMap<String, Job>()
     private val lastStart = ConcurrentHashMap<String, Long>()
+    private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
     private val _running = MutableStateFlow<Set<String>>(emptySet())
     val running: StateFlow<Set<String>> = _running
 
-    fun onEvent(type: TriggerType, address: String?) {
+    /** Текст статуса по каждому макросу: текущий шаг или итог последнего запуска. */
+    private val _status = MutableStateFlow<Map<String, String>>(emptyMap())
+    val status: StateFlow<Map<String, String>> = _status
+
+    private fun setStatus(id: String, text: String) = _status.update { it + (id to text) }
+
+    fun onEvent(type: TriggerType, address: String? = null, param: String? = null) {
         for (m in store.macros.value) {
             if (!m.enabled || m.trigger.type != type) continue
-            val wanted = m.trigger.deviceAddress
-            if (type.needsDevice && wanted != null && !wanted.equals(address, ignoreCase = true)) continue
-            run(m, address, manual = false)
+            if (type.needsDevice) {
+                val wanted = m.trigger.deviceAddress
+                if (wanted != null && !wanted.equals(address, ignoreCase = true)) continue
+            }
+            if (type.needsMacro) {
+                if (param == m.id) continue // не реагировать на своё же завершение
+                if (m.trigger.param != null && m.trigger.param != param) continue
+            }
+            run(m, address, Source.EVENT)
         }
     }
 
-    fun run(m: Macro, triggerAddress: String?, manual: Boolean) {
+    /** Почему макрос сейчас не должен запускаться (null — можно). */
+    private fun conditionFailure(m: Macro): String? {
+        m.conditionAddress?.let { if (!bt.isConnected(it)) return "${m.conditionName ?: it} не подключено" }
+        val from = m.timeFrom
+        val to = m.timeTo
+        if (from != null && to != null && from != to) {
+            val c = Calendar.getInstance()
+            val now = c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE)
+            val inside = if (from < to) now in from until to else now >= from || now < to
+            if (!inside) return "вне временного окна"
+        }
+        m.condAA?.let { want ->
+            if (aa.connected.value != want) return if (want) "Android Auto не активен" else "Android Auto активен"
+        }
+        m.condMacroId?.let { id ->
+            val isRunning = id in _running.value
+            if (isRunning != m.condMacroRunning) {
+                return "«${m.condMacroName ?: "?"}» " + if (isRunning) "выполняется" else "не выполняется"
+            }
+        }
+        return null
+    }
+
+    /**
+     * Запустить макрос. [chain] — цепочка вызывающих макросов (защита от рекурсии).
+     * Возвращает Job или null, если запуск не состоялся.
+     */
+    fun run(m: Macro, triggerAddress: String?, source: Source, chain: Set<String> = emptySet()): Job? {
+        if (m.id in chain || chain.size > 8) {
+            EventLog.add("«${m.name}»: пропущен — макрос вызывает сам себя по цепочке")
+            return null
+        }
         val now = SystemClock.elapsedRealtime()
-        if (!manual) {
+        if (source != Source.MANUAL) {
+            conditionFailure(m)?.let {
+                EventLog.add("«${m.name}»: условие не выполнено — $it")
+                return null
+            }
+        }
+        if (source == Source.EVENT) {
             val last = lastStart[m.id]
             if (last != null && now - last < m.cooldownSec * 1000L) {
                 EventLog.add("«${m.name}»: пропущен (повтор раньше ${m.cooldownSec} с)")
-                return
-            }
-            val cond = m.conditionAddress
-            if (cond != null && !bt.isConnected(cond)) {
-                EventLog.add("«${m.name}»: условие не выполнено — ${m.conditionName ?: cond} не подключено")
-                return
+                return null
             }
         }
         lastStart[m.id] = now
@@ -69,22 +124,37 @@ class MacroEngine(
 
         val job = scope.launch(start = CoroutineStart.LAZY) {
             _running.update { it + m.id }
-            EventLog.add("▶ «${m.name}» запущен" + if (manual) " вручную" else "")
+            setStatus(m.id, "запуск…")
+            EventLog.add("▶ «${m.name}» запущен" + when (source) {
+                Source.MANUAL -> " вручную"
+                Source.MACRO -> " из другого макроса"
+                Source.EVENT -> ""
+            })
+            var finishedOk = false
             try {
-                m.actions.forEachIndexed { i, a -> execute(m, i, a, triggerAddress) }
+                m.actions.forEachIndexed { i, a ->
+                    setStatus(m.id, "шаг ${i + 1}/${m.actions.size}: ${a.describe()}")
+                    execute(m, i, a, triggerAddress, chain + m.id)
+                }
+                finishedOk = true
+                setStatus(m.id, "выполнен в ${timeFmt.format(Date())}")
                 EventLog.add("■ «${m.name}» выполнен")
             } catch (e: CancellationException) {
+                setStatus(m.id, "прерван в ${timeFmt.format(Date())}")
                 EventLog.add("✕ «${m.name}» прерван")
                 throw e
             } catch (e: Exception) {
+                setStatus(m.id, "ошибка: ${e.message}")
                 EventLog.add("✕ «${m.name}»: ошибка ${e.message}")
             } finally {
                 _running.update { it - m.id }
+                if (finishedOk) onEvent(TriggerType.MACRO_FINISHED, null, m.id)
             }
         }
         jobs[m.id] = job
         job.invokeOnCompletion { jobs.remove(m.id, job) }
         job.start()
+        return job
     }
 
     fun stop(id: String) {
@@ -98,7 +168,17 @@ class MacroEngine(
             else -> a.deviceAddress
         }
 
-    private suspend fun execute(m: Macro, index: Int, a: MacroAction, triggerAddress: String?) {
+    /** Подстановки в тексты: {macro} {device} {time} {date}. */
+    private fun expand(text: String, m: Macro, triggerAddress: String?): String {
+        val now = Date()
+        return text
+            .replace("{macro}", m.name)
+            .replace("{device}", triggerAddress?.let { bt.nameOf(it) } ?: "—")
+            .replace("{time}", SimpleDateFormat("HH:mm", Locale.getDefault()).format(now))
+            .replace("{date}", SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(now))
+    }
+
+    private suspend fun execute(m: Macro, index: Int, a: MacroAction, triggerAddress: String?, chain: Set<String>) {
         val p = "«${m.name}» #${index + 1}"
         when (a.type) {
             ActionType.DELAY -> {
@@ -123,8 +203,15 @@ class MacroEngine(
                 val ok = withTimeoutOrNull(a.seconds * 1000L) {
                     bt.connected.first { (addr in it) == want }
                 } != null
-                EventLog.add("$p: ${bt.nameOf(addr)} " +
-                    (if (want) "подключилось" else "отключилось").let { if (ok) it else "не $it за ${a.seconds} с" })
+                val what = if (want) "подключилось" else "отключилось"
+                EventLog.add("$p: ${bt.nameOf(addr)} " + if (ok) what else "не $what за ${a.seconds} с")
+            }
+
+            ActionType.WAIT_AA_ON, ActionType.WAIT_AA_OFF -> {
+                val want = a.type == ActionType.WAIT_AA_ON
+                val ok = withTimeoutOrNull(a.seconds * 1000L) { aa.connected.first { it == want } } != null
+                val what = if (want) "подключился" else "отключился"
+                EventLog.add("$p: Android Auto " + if (ok) what else "не $what за ${a.seconds} с")
             }
 
             ActionType.BT_OFF -> EventLog.add("$p: выключить Bluetooth → " + okText(bt.setBluetooth(false)))
@@ -148,9 +235,65 @@ class MacroEngine(
                 if (r == null) EventLog.add("$p: приоритет — подходящих устройств нет")
             }
 
+            ActionType.MEDIA_KEY -> {
+                val key = runCatching { MediaKey.valueOf(a.param ?: "") }.getOrNull()
+                    ?: return EventLog.add("$p: кнопка не выбрана")
+                MediaKeys.send(context, key)
+                EventLog.add("$p: медиа-кнопка «${key.title}»")
+            }
+
+            ActionType.RUN_MACRO -> {
+                val target = store.macros.value.find { it.id == a.param }
+                    ?: return EventLog.add("$p: макрос не найден (удалён?)")
+                val job = run(target, triggerAddress, Source.MACRO, chain)
+                if (job == null) {
+                    EventLog.add("$p: «${target.name}» не запущен")
+                } else if (a.flag) {
+                    EventLog.add("$p: жду завершения «${target.name}»")
+                    job.join()
+                }
+            }
+
+            ActionType.STOP_MACRO -> {
+                val id = a.param ?: return EventLog.add("$p: макрос не выбран")
+                stop(id)
+                EventLog.add("$p: остановить «${a.paramLabel ?: id}»")
+            }
+
+            ActionType.OPEN_APP -> {
+                val pkg = a.param ?: return EventLog.add("$p: приложение не выбрано")
+                val r = withContext(Dispatchers.Main) { Launcher.openApp(context, pkg, a.paramLabel ?: pkg) }
+                EventLog.add("$p: открыть ${a.paramLabel ?: pkg} → $r")
+            }
+
+            ActionType.SET_TIMER -> {
+                val label = expand(a.text, m, triggerAddress)
+                val r = withContext(Dispatchers.Main) { Launcher.setTimer(context, a.seconds.coerceAtLeast(1), label) }
+                EventLog.add("$p: таймер на ${a.seconds / 60} мин → $r")
+            }
+
+            ActionType.SET_ALARM -> {
+                val label = expand(a.text, m, triggerAddress)
+                val r = withContext(Dispatchers.Main) { Launcher.setAlarm(context, a.hour, a.minute, label) }
+                EventLog.add("$p: будильник на %02d:%02d → $r".format(a.hour, a.minute))
+            }
+
             ActionType.NOTIFY -> {
-                Notifications.event(context, a.text.ifBlank { m.name })
+                Notifications.event(context, expand(a.text.ifBlank { m.name }, m, triggerAddress))
                 EventLog.add("$p: уведомление")
+            }
+
+            ActionType.EMAIL -> {
+                val cfg = Mailer.load(context)
+                val err = withContext(Dispatchers.IO) {
+                    Mailer.send(
+                        cfg,
+                        to = a.param.orEmpty(),
+                        subject = expand(a.subject.ifBlank { "BT Макросы: {macro}" }, m, triggerAddress),
+                        body = expand(a.text.ifBlank { "Сработал макрос «{macro}» в {time}" }, m, triggerAddress),
+                    )
+                }
+                EventLog.add("$p: письмо → " + (err ?: "отправлено"))
             }
         }
     }

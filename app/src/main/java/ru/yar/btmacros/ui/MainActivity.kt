@@ -15,6 +15,8 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.IconButton
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -74,8 +76,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        App.instance.uiVisible = true
         App.instance.bt.ensureProxies()
         App.instance.bt.refresh()
+    }
+
+    override fun onPause() {
+        App.instance.uiVisible = false
+        super.onPause()
     }
 }
 
@@ -96,6 +104,13 @@ fun BtTheme(content: @Composable () -> Unit) {
 fun MainScreen() {
     var tab by rememberSaveable { mutableStateOf(0) }
     var editing by remember { mutableStateOf<Macro?>(null) }
+    var settings by remember { mutableStateOf(false) }
+
+    if (settings) {
+        BackHandler { settings = false }
+        SettingsScreen(onBack = { settings = false })
+        return
+    }
 
     val current = editing
     if (current != null) {
@@ -110,7 +125,14 @@ fun MainScreen() {
 
     val titles = listOf("Устройства", "Макросы", "Музыка", "Журнал")
     Scaffold(
-        topBar = { TopAppBar(title = { Text(titles[tab]) }) },
+        topBar = {
+            TopAppBar(
+                title = { Text(titles[tab]) },
+                actions = {
+                    IconButton(onClick = { settings = true }) { Icon(Icons.Default.Settings, "Настройки") }
+                },
+            )
+        },
         bottomBar = {
             NavigationBar {
                 NavigationBarItem(selected = tab == 0, onClick = { tab = 0 },
