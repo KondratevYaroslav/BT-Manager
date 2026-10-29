@@ -47,7 +47,9 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
             val bt = App.instance.bt
             ru.yar.btmacros.data.EventLog.add(
-                "Разрешение «Устройства поблизости»: " + if (result.values.all { it }) "выдано" else "отклонено"
+                "Разрешения: " + result.entries.joinToString { (k, v) ->
+                    k.substringAfterLast('.') + "=" + if (v) "да" else "нет"
+                }
             )
             bt.ensureProxies()
             bt.refresh()
@@ -60,8 +62,13 @@ class MainActivity : ComponentActivity() {
         app.bt.start()
         if (app.monitoringEnabled) MonitorService.start(this)
         setContent { BtTheme { MainScreen() } }
-        if (!app.bt.hasPermission()) {
-            permissionRequest.launch(arrayOf(android.Manifest.permission.BLUETOOTH_CONNECT))
+        if (!app.bt.hasPermission() || !app.bt.hasLocationPermission()) {
+            permissionRequest.launch(arrayOf(
+                android.Manifest.permission.BLUETOOTH_CONNECT,
+                android.Manifest.permission.BLUETOOTH_SCAN,
+                android.Manifest.permission.ACCESS_FINE_LOCATION,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            ))
         }
     }
 

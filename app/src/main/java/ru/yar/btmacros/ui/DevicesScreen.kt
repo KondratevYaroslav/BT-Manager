@@ -42,6 +42,32 @@ import ru.yar.btmacros.App
 import ru.yar.btmacros.bt.BtController
 import ru.yar.btmacros.data.EventLog
 import ru.yar.btmacros.service.MonitorService
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.FilterChip
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
+
+/** Статус устройства на экране. Порядок = порядок сортировки. */
+private enum class DevStatus(val label: String) {
+    CONNECTED("● подключено"),
+    NEARBY("● рядом"),
+    SAVED("○ в памяти"),
+}
+
+private val Green = Color(0xFF43A047)
+private val Purple = Color(0xFF9C6ADE)
+
+@Composable
+private fun statusColor(s: DevStatus): Color = when (s) {
+    DevStatus.CONNECTED -> Green
+    DevStatus.NEARBY -> Purple
+    DevStatus.SAVED -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+}
 
 @Composable
 fun DevicesScreen() {
@@ -55,6 +81,28 @@ fun DevicesScreen() {
     val connected by bt.connected.collectAsStateWithLifecycle()
     val monitoring by MonitorService.running.collectAsStateWithLifecycle()
     val problem by bt.problem.collectAsStateWithLifecycle()
+    val nearby by bt.nearby.collectAsStateWithLifecycle()
+    val scanning by bt.scanning.collectAsStateWithLifecycle()
+    var sortByStatus by rememberSaveable { mutableStateOf(true) }
+
+    fun statusOf(address: String) = when (address) {
+        in connected -> DevStatus.CONNECTED
+        in nearby -> DevStatus.NEARBY
+        else -> DevStatus.SAVED
+    }
+
+    fun scan() {
+        bt.startScan()?.let { reason ->
+            EventLog.add("Поиск рядом: $reason")
+            Toast.makeText(ctx, "Поиск: $reason", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // Поиск при открытии экрана
+    LaunchedEffect(enabled) { if (enabled) bt.startScan() }
+
+    val list = if (sortByStatus) bonded.sortedWith(compareBy({ statusOf(it.address).ordinal }, { it.name.lowercase() }))
+    else bonded
 
     var busy by remember { mutableStateOf<String?>(null) }
     var diag by remember { mutableStateOf<String?>(null) }
@@ -108,11 +156,26 @@ fun DevicesScreen() {
         }
 
         item {
-            Text(
-                "Сохранённые устройства (${bonded.size}), подключено: ${connected.size}",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(top = 4.dp),
-            )
+            val nearbyCount = bonded.count { statusOf(it.address) == DevStatus.NEARBY }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 4.dp)) {
+                Text(
+                    "Сохранённые устройства (${bonded.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Legend(Green, "подключено: ${connected.size}")
+                    Legend(Purple, "рядом: $nearbyCount")
+                    Legend(statusColor(DevStatus.SAVED), "в памяти")
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = sortByStatus, onClick = { sortByStatus = true }, label = { Text("По статусу") })
+                    FilterChip(selected = !sortByStatus, onClick = { sortByStatus = false }, label = { Text("По имени") })
+                    Box(Modifier.weight(1f))
+                    TextButton(onClick = { scan() }, enabled = !scanning && enabled) {
+                        Text(if (scanning) "Ищу…" else "Искать рядом")
+                    }
+                }
+            }
         }
 
         if (!enabled) {
@@ -146,23 +209,35 @@ fun DevicesScreen() {
             }
         }
 
-        items(bonded, key = { it.address }) { d ->
-            val isOn = d.address in connected
+        items(list, key = { it.address }) { d ->
+            val st = statusOf(d.address)
+            val color = statusColor(st)
             Card(
                 Modifier.fillMaxWidth(),
-                colors = if (isOn) CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                else CardDefaults.cardColors(),
+                colors = when (st) {
+                    DevStatus.SAVED -> CardDefaults.cardColors()
+                    else -> CardDefaults.cardColors(
+                        containerColor = color.copy(alpha = 0.16f)
+                            .compositeOver(MaterialTheme.colorScheme.surfaceVariant),
+                    )
+                },
             ) {
                 Column(Modifier.padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 4.dp)) {
-                    Text(d.name, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        d.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (st == DevStatus.SAVED) color else MaterialTheme.colorScheme.onSurface,
+                    )
                     Text(
                         listOf(d.address, d.kind).filter { it.isNotEmpty() }.joinToString("  ·  "),
                         style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            if (busy == d.address) "выполняю…" else if (isOn) "● подключено" else "○ не подключено",
-                            color = if (isOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            if (busy == d.address) "выполняю…" else st.label,
+                            color = color,
+                            style = MaterialTheme.typography.labelLarge,
                             modifier = Modifier.weight(1f),
                         )
                         TextButton(onClick = { op(d, true) }, enabled = busy == null) { Text("Подключить") }
@@ -180,6 +255,14 @@ fun DevicesScreen() {
             title = { Text("Диагностика") },
             text = { Text(text, Modifier.verticalScroll(rememberScrollState())) },
         )
+    }
+}
+
+@Composable
+private fun Legend(color: Color, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(10.dp).background(color, CircleShape))
+        Text(" $text", style = MaterialTheme.typography.bodySmall)
     }
 }
 

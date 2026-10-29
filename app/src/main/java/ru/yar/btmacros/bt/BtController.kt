@@ -14,6 +14,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.location.LocationManager
+import android.os.SystemClock
 import android.os.Build
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -69,6 +71,14 @@ class BtController(private val context: Context) {
     private val _musicDevice = MutableStateFlow<String?>(null)
     val musicDevice: StateFlow<String?> = _musicDevice
 
+    /** Устройства, найденные поиском рядом: адрес → время, когда видели последний раз. */
+    private val seenAt = ConcurrentHashMap<String, Long>()
+    private val _nearby = MutableStateFlow<Set<String>>(emptySet())
+    val nearby: StateFlow<Set<String>> = _nearby
+
+    private val _scanning = MutableStateFlow(false)
+    val scanning: StateFlow<Boolean> = _scanning
+
     /** Почему список устройств может быть пустым (null — всё в порядке). */
     private val _problem = MutableStateFlow<String?>(null)
     val problem: StateFlow<String?> = _problem
@@ -103,6 +113,26 @@ class BtController(private val context: Context) {
     /** Состояние адаптера и профилей. ACL-события приходят через BtEventReceiver. */
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
+            when (intent.action) {
+                BluetoothDevice.ACTION_FOUND -> {
+                    val d = androidx.core.content.IntentCompat.getParcelableExtra(
+                        intent, BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    if (d != null) {
+                        seenAt[d.address] = SystemClock.elapsedRealtime()
+                        updateNearby()
+                    }
+                    return
+                }
+                BluetoothAdapter.ACTION_DISCOVERY_STARTED -> {
+                    _scanning.value = true
+                    return
+                }
+                BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
+                    _scanning.value = false
+                    updateNearby()
+                    return
+                }
+            }
             if (intent.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
                 when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
                     BluetoothAdapter.STATE_ON -> {
@@ -134,11 +164,45 @@ class BtController(private val context: Context) {
             addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
             addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
             addAction(ACTION_A2DP_ACTIVE_DEVICE_CHANGED)
+            addAction(BluetoothDevice.ACTION_FOUND)
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
         }
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
         ensureProxies()
         refresh()
     }
+
+    private fun updateNearby() {
+        val now = SystemClock.elapsedRealtime()
+        seenAt.entries.removeIf { now - it.value > NEARBY_TTL_MS }
+        _nearby.value = seenAt.keys.toSet()
+    }
+
+    /**
+     * Поиск устройств рядом (около 12 секунд). Находит только те устройства,
+     * которые сейчас в режиме видимости. Возвращает null при успехе или текст причины.
+     */
+    @Suppress("DEPRECATION")
+    fun startScan(): String? {
+        val ad = adapter ?: return "нет Bluetooth-адаптера"
+        if (!ad.isEnabled) return "Bluetooth выключен"
+        if (!hasLocationPermission()) return "нет разрешения на геолокацию — без него Android не даёт искать устройства"
+        val lm = context.getSystemService(LocationManager::class.java)
+        if (lm != null && !androidx.core.location.LocationManagerCompat.isLocationEnabled(lm)) {
+            return "выключена геолокация — включите её в шторке, иначе поиск ничего не найдёт"
+        }
+        return try {
+            if (ad.isDiscovering) null
+            else if (ad.startDiscovery()) null else "система не запустила поиск"
+        } catch (e: SecurityException) {
+            "система запретила поиск: ${e.message}"
+        }
+    }
+
+    fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
 
     /** На Android 12+ — выдано ли разрешение «Устройства поблизости». */
     fun hasPermission(): Boolean =
@@ -208,6 +272,7 @@ class BtController(private val context: Context) {
         if (on) runCatching { a2dp?.connectedDevices?.forEach { audio.add(it.address) } }
         set.addAll(audio)
         _connected.value = set
+        updateNearby()
         _a2dpConnected.value = audio
         _musicDevice.value = if (on) readActiveMusicDevice() else null
     }
@@ -368,6 +433,9 @@ class BtController(private val context: Context) {
 
     companion object {
         /** Скрытая константа BluetoothA2dp.ACTION_ACTIVE_DEVICE_CHANGED. */
+        /** Сколько считать устройство «рядом» после последнего обнаружения. */
+        const val NEARBY_TTL_MS = 3 * 60 * 1000L
+
         const val ACTION_A2DP_ACTIVE_DEVICE_CHANGED =
             "android.bluetooth.a2dp.profile.action.ACTIVE_DEVICE_CHANGED"
     }
