@@ -65,6 +65,9 @@ fun SettingsScreen(onBack: () -> Unit) {
     var to by remember { mutableStateOf(saved.defaultTo) }
     var testing by remember { mutableStateOf(false) }
     var overlayOk by remember { mutableStateOf(Launcher.canStartFromBackground(ctx)) }
+    val version = remember {
+        runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull()
+    }
 
     fun config() = Mailer.Config(host, port.toIntOrNull() ?: 465, ssl, user, password, from, to)
 
@@ -94,7 +97,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     Text("Запуск приложений, таймеров, будильников", style = MaterialTheme.typography.titleMedium)
                     Text(
                         "Android не даёт открывать экраны из фона. Разрешите «Поверх других окон», " +
-                            "а на Xiaomi ещё «Другие разрешения → Отображать всплывающие окна, " +
+                            "а на Xiaomi ещё «Другие разрешения → Открывать всплывающие окна, " +
                             "когда приложение работает в фоне». Без этого вместо запуска придёт уведомление-кнопка.",
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -211,6 +214,33 @@ fun SettingsScreen(onBack: () -> Unit) {
                         "В теме и тексте письма и уведомлений можно писать {macro}, {device}, {time}, {date}.",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                }
+            }
+
+            // ---------- О приложении ----------
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("О приложении", style = MaterialTheme.typography.titleMedium)
+                    Text("BT Макросы" + (version?.let { " · версия $it" } ?: ""))
+                    Text(
+                        "Свободное приложение без рекламы и трекеров. Исходный код открыт на GitHub.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text("Разработчик: Ярослав Кондратьев", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            runCatching {
+                                ctx.startActivity(Intent(Intent.ACTION_VIEW,
+                                    Uri.parse("https://github.com/KondratevYaroslav/BT-Manager")))
+                            }
+                        }) { Text("GitHub-репозиторий") }
+                        OutlinedButton(onClick = {
+                            runCatching {
+                                ctx.startActivity(Intent(Intent.ACTION_VIEW,
+                                    Uri.parse("https://github.com/KondratevYaroslav")))
+                            }
+                        }) { Text("Профиль разработчика") }
+                    }
                 }
             }
         }
